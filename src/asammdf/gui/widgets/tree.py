@@ -1042,14 +1042,14 @@ class ChannelsTreeWidget(QtWidgets.QTreeWidget):
             # for item in self.selectedItems():
             if item.type() == item.Group and item.isDisabled():
                 item.set_disabled(False)
-                item.setIcon(item.NameColumn, QtGui.QIcon(":/open.png"))
             self.group_activation_changed.emit()
 
         elif action_text == "Deactivate groups":
-            for item in self.selectedItems():
+            selectedItems = self.selectedItems()
+            selectedItems.append(item)
+            for item in selectedItems:
                 if item.type() == item.Group and not item.isDisabled():
                     item.set_disabled(True)
-                    item.setIcon(item.NameColumn, QtGui.QIcon(":/erase.png"))
 
             self.group_activation_changed.emit()
 
@@ -1699,6 +1699,9 @@ class ChannelsTreeItem(QtWidgets.QTreeWidgetItem):
             self.setCheckState(self.NameColumn, QtCore.Qt.Unchecked)
             self.name = name.split("\t[")[0]
 
+            # Store Previous State (Disabled/Enabled)
+            self._previous_state = self.isDisabled()
+
         elif type == self.Channel:
             self.signal = signal
             self.details = None
@@ -2105,7 +2108,7 @@ class ChannelsTreeItem(QtWidgets.QTreeWidgetItem):
                 child = self.child(i)
                 child.set_conversion(conversion)
 
-    def set_disabled(self, disabled):
+    def set_disabled(self, disabled, preserve_subgroup_state=True):
         if self.type() == self.Channel:
             self.setDisabled(disabled)
             if self.details is not None:
@@ -2118,12 +2121,29 @@ class ChannelsTreeItem(QtWidgets.QTreeWidgetItem):
                 self.signal.enable = enable
 
         elif self.type() == self.Group:
+            # If the group is subgroup (has a parent)
+            if self.parent() and not self.parent().isDisabled():
+                # And the action was triggered on it
+                if preserve_subgroup_state:
+                    # Save current state
+                    self._previous_state = not self.isDisabled()
+                # Restore state
+                elif not disabled:
+                    disabled = self._previous_state
+
+            if disabled:
+                self.setIcon(self.NameColumn, QtGui.QIcon(":/erase.png"))
+            elif not self.parent() or (
+                self.parent() and not self.parent().isDisabled()
+            ):
+                self.setIcon(self.NameColumn, QtGui.QIcon(":/open.png"))
+
             self.setDisabled(disabled)
 
             count = self.childCount()
             for i in range(count):
                 child = self.child(i)
-                child.set_disabled(disabled)
+                child.set_disabled(disabled, preserve_subgroup_state=False)
 
     def set_fmt(self, fmt):
         if self.kind in "SUV":
