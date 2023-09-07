@@ -2186,6 +2186,8 @@ class Plot(QtWidgets.QWidget):
                                 if info["enabled"]
                                 else QtCore.Qt.Unchecked,
                             )
+                    if info["disabled"]:
+                        item.set_disabled(info["disabled"])
 
                 self.channel_selection.blockSignals(False)
                 self.channel_selection.refresh()
