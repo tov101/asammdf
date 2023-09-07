@@ -367,10 +367,19 @@ class Delegate(QtWidgets.QItemDelegate):
     def __init__(self, *args):
         super().__init__(*args)
 
-    def paint(self, pinter, option, index):
+    def paint(self, painter, option, index):
         model = index.model()
 
+        item = self.parent().itemFromIndex(index)
         brush = model.data(index, QtCore.Qt.ForegroundRole)
+
+        # Paint disabled items - hard way
+        if item and item.type() == item.Channel and item.parent():
+            for column in range(item.columnCount()):
+                if item.isDisabled():
+                    item.setForeground(column, QtGui.Qt.darkGray)
+                else:
+                    item.setForeground(column, item.color)
 
         if brush is not None:
             color = brush.color()
@@ -379,7 +388,7 @@ class Delegate(QtWidgets.QItemDelegate):
             option.palette.setColor(QtGui.QPalette.Highlight, color)
             option.palette.setColor(QtGui.QPalette.HighlightedText, complementary)
 
-        super().paint(pinter, option, index)
+        super().paint(painter, option, index)
 
 
 class ChannelsTreeFlags(IntFlag):
