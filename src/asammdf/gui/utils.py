@@ -650,6 +650,7 @@ def compute_signal(
 
             else:
                 signals = [sig.samples for sig in signals]
+                signals = [sig.view(np.lib.format.drop_metadata(sig.dtype)) for sig in signals]
 
                 signals.append(common_timebase)
 
@@ -1070,7 +1071,7 @@ def get_color_using_ranges(
 
         for range_info in ranges:
             (
-                background_color,
+                _background_color,
                 font_color,
                 op1,
                 op2,
@@ -1153,7 +1154,7 @@ def value_as_hex(value, dtype):
 
 
 def value_as_str(value, format, dtype=None, precision=3):
-    float_fmt = f"{{:.{precision}f}}" if precision >= 0 else "{}"
+    
     if isinstance(value, float):
         kind = "f"
         value = np.float64(value)
@@ -1201,6 +1202,7 @@ def value_as_str(value, format, dtype=None, precision=3):
                     precision = 15
                 string = np.format_float_scientific(value, precision=precision)
             case _:
+                float_fmt = f"{{:.{precision}f}}" if precision >= 0 else "{}"
                 string = float_fmt.format(value)
 
     return string
@@ -1263,6 +1265,7 @@ def generate_python_function_globals() -> dict:
         "struct": struct,
         "time": time,
         "__builtins__": _BUILTINS,
+        "beep": QtWidgets.QApplication.beep,
     }
     try:
         import scipy as sp

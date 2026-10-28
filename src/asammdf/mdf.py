@@ -82,6 +82,7 @@ from .blocks.utils import (
     MDF3_VERSIONS,
     MDF4_VERSIONS,
     MdfException,
+    NamedTemporaryFile,
     plausible_timestamps,
     randomized_string,
     SUPPORTED_VERSIONS,
@@ -1052,13 +1053,71 @@ class MDF:
         """
         version = validate_version_argument(version)
 
-        out = MDF(version=version, **self._mdf._kwargs)
+        if (
+            self.version >= "4.00"
+            and version >= "4.00"
+            and not self._mdf._column_storage
+            and not self._mdf._add_array_components
+        ):
+            out = self._convert_mf4_fast(version, progress)
 
-        out.configure(from_other=self)
+        else:
+            out = MDF(version=version, **self._mdf._kwargs)
 
-        out.header.start_time = self.header.start_time
+            out.configure(from_other=self)
 
-        groups_nr = len(self.virtual_groups)
+            out.header.start_time = self.header.start_time
+
+            groups_nr = len(self.virtual_groups)
+
+            if progress is not None:
+                if callable(progress):
+                    progress(0, groups_nr)
+                else:
+                    progress.signals.setValue.emit(0)
+                    progress.signals.setMaximum.emit(groups_nr)
+
+                    if progress.stop:
+                        raise Terminated
+
+            # walk through all groups and get all channels
+            for i, virtual_group in enumerate(self.virtual_groups):
+                for idx, sigs in enumerate(self._mdf._yield_selected_signals(virtual_group, version=version)):
+                    if idx == 0:
+                        sigs = typing.cast(list[Signal], sigs)
+                        if sigs:
+                            cg = self.groups[virtual_group].channel_group
+                            cg_nr = out.append(
+                                sigs,
+                                common_timebase=True,
+                                comment=cg.comment,
+                            )
+                            MDF._transfer_channel_group_data(out.groups[cg_nr].channel_group, cg)
+                        else:
+                            break
+                    else:
+                        sigs = typing.cast(list[tuple[NDArray[Any], None]], sigs)
+                        out.extend(cg_nr, sigs)
+
+                    if progress and progress.stop:
+                        raise Terminated
+
+                if progress is not None:
+                    if callable(progress):
+                        progress(i + 1, groups_nr)
+                    else:
+                        progress.signals.setValue.emit(i + 1)
+                        progress.signals.setMaximum.emit(groups_nr)
+
+                        if progress.stop:
+                            raise Terminated
+
+        out._transfer_metadata(self, message=f"Converted from {self.name}")
+
+        return out
+
+    def _convert_mf4_fast(self, version: str | Version, progress: Any | None = None) -> "MDF":
+        groups_nr = len(self.groups)
 
         if progress is not None:
             if callable(progress):
@@ -1070,27 +1129,38 @@ class MDF:
                 if progress.stop:
                     raise Terminated
 
-        # walk through all groups and get all channels
-        for i, virtual_group in enumerate(self.virtual_groups):
-            for idx, sigs in enumerate(self._mdf._yield_selected_signals(virtual_group, version=version)):
-                if idx == 0:
-                    sigs = typing.cast(list[Signal], sigs)
-                    if sigs:
-                        cg = self.groups[virtual_group].channel_group
-                        cg_nr = out.append(
-                            sigs,
-                            common_timebase=True,
-                            comment=cg.comment,
-                        )
-                        MDF._transfer_channel_group_data(out.groups[cg_nr].channel_group, cg)
-                    else:
-                        break
-                else:
-                    sigs = typing.cast(list[tuple[NDArray[Any], None]], sigs)
-                    out.extend(cg_nr, sigs)
+        _mapped_file = self._mdf._mapped_file
+        _file = self._mdf._file
+        _tempfile = self._mdf._tempfile
 
-                if progress and progress.stop:
-                    raise Terminated
+        self._mdf._mapped_file = None
+        self._mdf._file = None
+        self._mdf._tempfile = None
+
+        out = deepcopy(self)
+
+        self._mdf._mapped_file = _mapped_file
+        self._mdf._file = _file
+        self._mdf._tempfile = _tempfile
+
+        out._mdf._tempfile = tmp = NamedTemporaryFile(dir=self._mdf.temporary_folder)
+
+        out._mdf.version = version
+        out._mdf.identification = FileIdentificationBlock(version=version)
+
+        for i, gp in enumerate(out.groups):
+            if gp.data_location == v4c.LOCATION_ORIGINAL_FILE:
+                stream = self._mdf._file
+            else:
+                stream = self._mdf._tempfile
+
+            gp.data_location = v4c.LOCATION_TEMPORARY_FILE
+            gp.data_blocks_info_generator = None
+
+            read = stream.read
+            seek = stream.seek
+            write = tmp.write
+            tell = tmp.tell
 
             if progress is not None:
                 if callable(progress):
@@ -1102,7 +1172,24 @@ class MDF:
                     if progress.stop:
                         raise Terminated
 
-        out._transfer_metadata(self, message=f"Converted from {self.name}")
+            for info in gp.data_blocks:
+                seek(info.address)
+                info.address = tell()
+                write(read(info.compressed_size))
+
+                if inv_info := info.invalidation_block:
+                    seek(inv_info.address)
+                    inv_info.address = tell()
+                    write(read(inv_info.compressed_size))
+
+            for signal_blocks in gp.signal_data:
+                if not signal_blocks:
+                    continue
+                for info in signal_blocks:
+                    seek(info.address)
+                    info.address = tell()
+                    info.location = v4c.LOCATION_TEMPORARY_FILE
+                    write(read(info.compressed_size))
 
         return out
 
@@ -1445,7 +1532,6 @@ class MDF:
                 progress.signals.setMaximum.emit(groups_nr)
 
         for i, group in enumerate(self.groups):
-
             channel_group = group.channel_group
             record_size = channel_group.samples_byte_nr + channel_group.invalidation_bytes_nr
 
@@ -3610,9 +3696,9 @@ class MDF:
 
                 if dg_cntr is not None:
                     for index in range(dg_cntr, len(stacked.groups)):
-                        stacked.groups[index].channel_group.comment = (
-                            f'stacked from channel group {i} of "{mdf.name.parent}"'
-                        )
+                        stacked.groups[
+                            index
+                        ].channel_group.comment = f'stacked from channel group {i} of "{mdf.name.parent}"'
 
             if progress is not None:
                 if callable(progress):
@@ -4162,7 +4248,6 @@ class MDF:
                     channels, record_offset, raw, copy_master, ignore_value2text_conversions, record_count, validate
                 )
 
-            grp.load_all_data_blocks()
             blocks = grp.data_blocks
             record_size = grp.channel_group.samples_byte_nr + grp.channel_group.invalidation_bytes_nr
             if not validate_blocks(blocks, record_size):

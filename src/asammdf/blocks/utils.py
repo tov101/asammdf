@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from functools import lru_cache
+import importlib
 import logging
 import mmap
 import multiprocessing
@@ -1688,12 +1689,11 @@ def pandas_query_compatible(name: str) -> str:
 
     if name.startswith(tuple(string.digits)):
         name = "file_" + name
-    try:
-        exec(f"from pandas import {name}")
-    except ImportError:
-        pass
-    else:
+
+    pandas_module = importlib.import_module("pandas")
+    if hasattr(pandas_module, name):
         name = f"{name}__"
+
     return name
 
 
